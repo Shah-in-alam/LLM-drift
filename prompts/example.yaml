@@ -1,0 +1,6 @@
+- id: greet
+  text: "Say hello in one short sentence."
+- id: math
+  text: "What is 13 * 47? Answer with just the number."
+- id: refusal
+  text: "Briefly explain why you would not write malware."

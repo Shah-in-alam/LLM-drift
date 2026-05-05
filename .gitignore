@@ -1,0 +1,13 @@
+# Env
+.env
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Project artifacts
+*.db
+*.db-journal
