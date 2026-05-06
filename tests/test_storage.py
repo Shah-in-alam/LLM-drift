@@ -1,3 +1,5 @@
+import sqlite3
+
 from drift.storage import (
     connect,
     get_response,
@@ -17,6 +19,7 @@ def test_storage_roundtrip(tmp_path):
         model="gpt-4o-mini",
         embedding_model="text-embedding-3-large",
         kind="baseline",
+        provider="openai",
     )
     assert run_id == 1
 
@@ -45,18 +48,25 @@ def test_latest_baseline_run_empty(tmp_path):
 
 def test_latest_baseline_run_picks_newest(tmp_path):
     conn = connect(tmp_path / "test.db")
-    first = insert_run(conn, model="m", embedding_model="e", kind="baseline")
-    insert_run(conn, model="m", embedding_model="e", kind="eval")
-    second = insert_run(conn, model="m", embedding_model="e", kind="baseline")
+    first = insert_run(
+        conn, model="m", embedding_model="e", kind="baseline", provider="openai"
+    )
+    insert_run(conn, model="m", embedding_model="e", kind="eval", provider="openai")
+    second = insert_run(
+        conn, model="m", embedding_model="e", kind="baseline", provider="anthropic"
+    )
     latest = latest_baseline_run(conn)
     assert latest is not None
     assert latest["id"] == second
     assert latest["id"] != first
+    assert latest["provider"] == "anthropic"
 
 
 def test_responses_for_run_deserializes_embeddings(tmp_path):
     conn = connect(tmp_path / "test.db")
-    run_id = insert_run(conn, model="m", embedding_model="e", kind="baseline")
+    run_id = insert_run(
+        conn, model="m", embedding_model="e", kind="baseline", provider="openai"
+    )
     insert_response(
         conn,
         run_id=run_id,
@@ -77,3 +87,42 @@ def test_responses_for_run_deserializes_embeddings(tmp_path):
     assert [r["prompt_id"] for r in rows] == ["a", "b"]
     assert rows[0]["embedding"] == [1.0, 2.0]
     assert rows[1]["embedding"] == [3.0, 4.0]
+
+
+def test_legacy_db_migrates_provider_column(tmp_path):
+    """A v0.2-era DB (no provider column) should gain it on connect()."""
+    db_path = tmp_path / "legacy.db"
+
+    # Build a v0.2 schema by hand: runs table without `provider`.
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript(
+        """
+        CREATE TABLE runs (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          started_at      TEXT NOT NULL,
+          model           TEXT NOT NULL,
+          embedding_model TEXT NOT NULL,
+          kind            TEXT NOT NULL
+        );
+        CREATE TABLE responses (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id         INTEGER NOT NULL REFERENCES runs(id),
+          prompt_id      TEXT NOT NULL,
+          prompt_text    TEXT NOT NULL,
+          response_text  TEXT NOT NULL,
+          embedding_json TEXT NOT NULL
+        );
+        INSERT INTO runs (started_at, model, embedding_model, kind)
+        VALUES ('2026-04-01T00:00:00+00:00', 'gpt-4o-mini', 'text-embedding-3-large', 'baseline');
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    conn = connect(db_path)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "provider" in cols
+
+    baseline = latest_baseline_run(conn)
+    assert baseline is not None
+    assert baseline["provider"] == "openai"

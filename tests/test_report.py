@@ -7,12 +7,14 @@ def _runs():
         "started_at": "2026-05-06T12:00:00+00:00",
         "model": "gpt-4o-mini",
         "embedding_model": "text-embedding-3-large",
+        "provider": "openai",
     }
     baseline_run = {
         "id": 1,
         "started_at": "2026-05-05T09:00:00+00:00",
         "model": "gpt-4o-mini",
         "embedding_model": "text-embedding-3-large",
+        "provider": "openai",
     }
     return eval_run, baseline_run
 
@@ -34,6 +36,7 @@ def test_markdown_fail_with_mixed_comparisons():
     )
 
     assert "# Drift report — run 7 (eval) vs run 1 (baseline)" in md
+    assert "- provider: openai (gpt-4o-mini)" in md
     assert "- threshold: 0.95" in md
     assert "result: FAIL (1/2 prompts below threshold)" in md
     assert "## greet — sim 0.987 ✓" in md

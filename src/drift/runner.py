@@ -4,9 +4,9 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from drift.config import CHAT_MODEL, EMBEDDING_MODEL, load_openai_api_key
 from drift.metrics import cosine
-from drift.providers import openai as openai_provider
+from drift.providers import ChatProvider, get_embedder, get_provider
+from drift.providers.openai_embed import EMBEDDING_MODEL
 from drift.report import Comparison, build_markdown
 from drift.storage import (
     connect,
@@ -36,17 +36,26 @@ def _load_prompts(prompts_path: Path) -> list[Prompt]:
 
 
 def _capture_run(
-    conn: sqlite3.Connection, *, kind: str, prompts: list[Prompt]
+    conn: sqlite3.Connection,
+    *,
+    kind: str,
+    prompts: list[Prompt],
+    provider: ChatProvider,
 ) -> tuple[int, int]:
     """Run the prompt suite once, store results. Returns (run_id, failure_count)."""
+    embed = get_embedder()
     run_id = insert_run(
-        conn, model=CHAT_MODEL, embedding_model=EMBEDDING_MODEL, kind=kind
+        conn,
+        model=provider.chat_model,
+        embedding_model=EMBEDDING_MODEL,
+        kind=kind,
+        provider=provider.name,
     )
     failures = 0
     for p in prompts:
         try:
-            response = openai_provider.chat(p.text)
-            embedding = openai_provider.embed(response)
+            response = provider.chat(p.text)
+            embedding = embed(response)
         except Exception as exc:
             failures += 1
             print(f"[fail] prompt_id={p.id}: {exc}")
@@ -64,13 +73,18 @@ def _capture_run(
     return run_id, failures
 
 
-def run_baseline(prompts_path: Path, db_path: Path) -> int:
-    load_openai_api_key()
+def run_baseline(prompts_path: Path, db_path: Path, provider_name: str) -> int:
+    provider = get_provider(provider_name)
     prompts = _load_prompts(prompts_path)
     conn = connect(db_path)
-    run_id, failures = _capture_run(conn, kind="baseline", prompts=prompts)
+    run_id, failures = _capture_run(
+        conn, kind="baseline", prompts=prompts, provider=provider
+    )
     captured = len(prompts) - failures
-    print(f"Baseline complete: {captured}/{len(prompts)} prompts captured. run_id={run_id}")
+    print(
+        f"Baseline complete: {captured}/{len(prompts)} prompts captured "
+        f"with provider={provider.name} model={provider.chat_model}. run_id={run_id}"
+    )
     return 1 if failures else 0
 
 
@@ -126,9 +140,12 @@ def _build_comparisons(
 
 
 def run_eval(
-    prompts_path: Path, db_path: Path, threshold: float, report_dir: Path
+    prompts_path: Path,
+    db_path: Path,
+    threshold: float,
+    report_dir: Path,
+    provider_name: str | None,
 ) -> int:
-    load_openai_api_key()
     prompts = _load_prompts(prompts_path)
 
     if not db_path.exists():
@@ -141,14 +158,28 @@ def run_eval(
         print("No baseline run found. Run 'drift baseline' first.")
         return 1
 
-    eval_run_id, failures = _capture_run(conn, kind="eval", prompts=prompts)
+    if provider_name is None:
+        provider_name = baseline["provider"]
+    elif provider_name != baseline["provider"]:
+        print(
+            f"Cannot compare: latest baseline used '{baseline['provider']}', "
+            f"requested provider is '{provider_name}'."
+        )
+        return 1
+
+    provider = get_provider(provider_name)
+
+    eval_run_id, failures = _capture_run(
+        conn, kind="eval", prompts=prompts, provider=provider
+    )
 
     baseline_responses = responses_for_run(conn, baseline["id"])
     eval_responses = responses_for_run(conn, eval_run_id)
     comparisons = _build_comparisons(baseline_responses, eval_responses, threshold)
 
     eval_run_row = conn.execute(
-        "SELECT id, started_at, model, embedding_model, kind FROM runs WHERE id = ?",
+        "SELECT id, started_at, model, embedding_model, kind, provider "
+        "FROM runs WHERE id = ?",
         (eval_run_id,),
     ).fetchone()
 

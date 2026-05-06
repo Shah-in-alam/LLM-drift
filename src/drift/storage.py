@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at      TEXT NOT NULL,
   model           TEXT NOT NULL,
   embedding_model TEXT NOT NULL,
-  kind            TEXT NOT NULL
+  kind            TEXT NOT NULL,
+  provider        TEXT NOT NULL DEFAULT 'openai'
 );
 
 CREATE TABLE IF NOT EXISTS responses (
@@ -25,20 +26,36 @@ CREATE INDEX IF NOT EXISTS idx_responses_run_prompt ON responses(run_id, prompt_
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    if "provider" not in cols:
+        conn.execute(
+            "ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'"
+        )
+        conn.commit()
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
 
 
 def insert_run(
-    conn: sqlite3.Connection, *, model: str, embedding_model: str, kind: str
+    conn: sqlite3.Connection,
+    *,
+    model: str,
+    embedding_model: str,
+    kind: str,
+    provider: str,
 ) -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
-        "INSERT INTO runs (started_at, model, embedding_model, kind) VALUES (?, ?, ?, ?)",
-        (started_at, model, embedding_model, kind),
+        "INSERT INTO runs (started_at, model, embedding_model, kind, provider) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (started_at, model, embedding_model, kind, provider),
     )
     conn.commit()
     return cur.lastrowid
@@ -77,7 +94,7 @@ def get_response(conn: sqlite3.Connection, response_id: int) -> dict:
 
 def latest_baseline_run(conn: sqlite3.Connection) -> dict | None:
     row = conn.execute(
-        "SELECT id, started_at, model, embedding_model, kind "
+        "SELECT id, started_at, model, embedding_model, kind, provider "
         "FROM runs WHERE kind = 'baseline' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     return dict(row) if row else None
