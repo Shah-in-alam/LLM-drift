@@ -130,8 +130,12 @@ def run_eval(
 ) -> int:
     load_openai_api_key()
     prompts = _load_prompts(prompts_path)
-    conn = connect(db_path)
 
+    if not db_path.exists():
+        print("No baseline run found. Run 'drift baseline' first.")
+        return 1
+
+    conn = connect(db_path)
     baseline = latest_baseline_run(conn)
     if baseline is None:
         print("No baseline run found. Run 'drift baseline' first.")
