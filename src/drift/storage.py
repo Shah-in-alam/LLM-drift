@@ -73,3 +73,25 @@ def get_response(conn: sqlite3.Connection, response_id: int) -> dict:
     data = dict(row)
     data["embedding"] = json.loads(data.pop("embedding_json"))
     return data
+
+
+def latest_baseline_run(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute(
+        "SELECT id, started_at, model, embedding_model, kind "
+        "FROM runs WHERE kind = 'baseline' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def responses_for_run(conn: sqlite3.Connection, run_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, run_id, prompt_id, prompt_text, response_text, embedding_json "
+        "FROM responses WHERE run_id = ? ORDER BY id",
+        (run_id,),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["embedding"] = json.loads(data.pop("embedding_json"))
+        out.append(data)
+    return out
