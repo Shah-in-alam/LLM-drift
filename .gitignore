@@ -11,3 +11,4 @@ __pycache__/
 # Project artifacts
 *.db
 *.db-journal
+reports/
