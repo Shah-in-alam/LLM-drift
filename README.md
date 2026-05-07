@@ -1,5 +1,7 @@
 # LLM Output Drift Detector
 
+[![CI](https://github.com/Shah-in-alam/LLM-drift/actions/workflows/ci.yml/badge.svg)](https://github.com/Shah-in-alam/LLM-drift/actions/workflows/ci.yml)
+
 A monitoring tool that detects when your production LLM silently changes behavior. It runs a fixed evaluation suite on a schedule, embeds the responses, and alerts you when outputs drift semantically from a baseline — even when the model version string hasn't changed.
 
 ## The Problem
