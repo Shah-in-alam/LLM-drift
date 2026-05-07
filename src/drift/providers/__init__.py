@@ -13,9 +13,7 @@ def get_provider(name: str) -> ChatProvider:
         return OpenAIChatProvider()
     if name == "anthropic":
         return AnthropicChatProvider()
-    raise ValueError(
-        f"Unknown provider: {name!r}. Choices: {', '.join(VALID_PROVIDERS)}."
-    )
+    raise ValueError(f"Unknown provider: {name!r}. Choices: {', '.join(VALID_PROVIDERS)}.")
 
 
 def get_embedder() -> Callable[[str], list[float]]:

@@ -77,9 +77,7 @@ def run_baseline(prompts_path: Path, db_path: Path, provider_name: str) -> int:
     provider = get_provider(provider_name)
     prompts = _load_prompts(prompts_path)
     conn = connect(db_path)
-    run_id, failures = _capture_run(
-        conn, kind="baseline", prompts=prompts, provider=provider
-    )
+    run_id, failures = _capture_run(conn, kind="baseline", prompts=prompts, provider=provider)
     captured = len(prompts) - failures
     print(
         f"Baseline complete: {captured}/{len(prompts)} prompts captured "
@@ -169,17 +167,14 @@ def run_eval(
 
     provider = get_provider(provider_name)
 
-    eval_run_id, failures = _capture_run(
-        conn, kind="eval", prompts=prompts, provider=provider
-    )
+    eval_run_id, failures = _capture_run(conn, kind="eval", prompts=prompts, provider=provider)
 
     baseline_responses = responses_for_run(conn, baseline["id"])
     eval_responses = responses_for_run(conn, eval_run_id)
     comparisons = _build_comparisons(baseline_responses, eval_responses, threshold)
 
     eval_run_row = conn.execute(
-        "SELECT id, started_at, model, embedding_model, kind, provider "
-        "FROM runs WHERE id = ?",
+        "SELECT id, started_at, model, embedding_model, kind, provider FROM runs WHERE id = ?",
         (eval_run_id,),
     ).fetchone()
 
@@ -194,9 +189,7 @@ def run_eval(
     report_path = report_dir / f"run-{eval_run_id}.md"
     report_path.write_text(markdown, encoding="utf-8")
 
-    failed_compared = [
-        c for c in comparisons if c.kind == "compared" and not c.passed
-    ]
+    failed_compared = [c for c in comparisons if c.kind == "compared" and not c.passed]
     result = "FAIL" if failed_compared else "PASS"
     print(f"Drift report: {result} — wrote {report_path}")
 

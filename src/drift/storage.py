@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _SCHEMA = """
@@ -29,9 +29,7 @@ CREATE INDEX IF NOT EXISTS idx_responses_run_prompt ON responses(run_id, prompt_
 def _migrate(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
     if "provider" not in cols:
-        conn.execute(
-            "ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'"
-        )
+        conn.execute("ALTER TABLE runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'openai'")
         conn.commit()
 
 
@@ -51,13 +49,14 @@ def insert_run(
     kind: str,
     provider: str,
 ) -> int:
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(UTC).isoformat()
     cur = conn.execute(
         "INSERT INTO runs (started_at, model, embedding_model, kind, provider) "
         "VALUES (?, ?, ?, ?, ?)",
         (started_at, model, embedding_model, kind, provider),
     )
     conn.commit()
+    assert cur.lastrowid is not None
     return cur.lastrowid
 
 
@@ -76,6 +75,7 @@ def insert_response(
         (run_id, prompt_id, prompt_text, response_text, json.dumps(embedding)),
     )
     conn.commit()
+    assert cur.lastrowid is not None
     return cur.lastrowid
 
 

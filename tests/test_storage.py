@@ -48,13 +48,9 @@ def test_latest_baseline_run_empty(tmp_path):
 
 def test_latest_baseline_run_picks_newest(tmp_path):
     conn = connect(tmp_path / "test.db")
-    first = insert_run(
-        conn, model="m", embedding_model="e", kind="baseline", provider="openai"
-    )
+    first = insert_run(conn, model="m", embedding_model="e", kind="baseline", provider="openai")
     insert_run(conn, model="m", embedding_model="e", kind="eval", provider="openai")
-    second = insert_run(
-        conn, model="m", embedding_model="e", kind="baseline", provider="anthropic"
-    )
+    second = insert_run(conn, model="m", embedding_model="e", kind="baseline", provider="anthropic")
     latest = latest_baseline_run(conn)
     assert latest is not None
     assert latest["id"] == second
@@ -64,9 +60,7 @@ def test_latest_baseline_run_picks_newest(tmp_path):
 
 def test_responses_for_run_deserializes_embeddings(tmp_path):
     conn = connect(tmp_path / "test.db")
-    run_id = insert_run(
-        conn, model="m", embedding_model="e", kind="baseline", provider="openai"
-    )
+    run_id = insert_run(conn, model="m", embedding_model="e", kind="baseline", provider="openai")
     insert_response(
         conn,
         run_id=run_id,

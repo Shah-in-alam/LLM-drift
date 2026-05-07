@@ -37,10 +37,7 @@ db_path = Path(db_path_str)
 reports_dir = Path(reports_dir_str)
 
 if not db_path.exists():
-    st.warning(
-        f"No database at `{db_path}`. Run `uv run drift baseline` first, "
-        "then come back."
-    )
+    st.warning(f"No database at `{db_path}`. Run `uv run drift baseline` first, then come back.")
     st.stop()
 
 conn = connect(db_path)
@@ -49,8 +46,7 @@ conn = connect(db_path)
 
 st.header("Runs")
 runs_df = pd.read_sql_query(
-    "SELECT id, started_at, kind, provider, model, embedding_model "
-    "FROM runs ORDER BY id DESC",
+    "SELECT id, started_at, kind, provider, model, embedding_model FROM runs ORDER BY id DESC",
     conn,
 )
 if runs_df.empty:
@@ -111,10 +107,7 @@ else:
     fail_count = (~sim_df["passed"]).sum()
     total_compared = len(sim_df)
     if fail_count:
-        st.error(
-            f"⚠️ {fail_count}/{total_compared} prompt-runs below threshold "
-            f"{threshold:.2f}."
-        )
+        st.error(f"⚠️ {fail_count}/{total_compared} prompt-runs below threshold {threshold:.2f}.")
     else:
         st.success(f"✅ All {total_compared} prompt-runs at or above threshold.")
 
