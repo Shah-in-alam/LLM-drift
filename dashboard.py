@@ -6,12 +6,13 @@ Then open the URL Streamlit prints (usually http://localhost:8501).
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from drift.metrics import cosine
+from drift.metrics import centroid, cosine
 from drift.storage import connect, latest_baseline_run, responses_for_run
 
 st.set_page_config(page_title="LLM Drift Detector", page_icon="📈", layout="wide")
@@ -42,11 +43,19 @@ if not db_path.exists():
 
 conn = connect(db_path)
 
+
+def _group_by_prompt(rows: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        out[r["prompt_id"]].append(r)
+    return out
+
+
 # --- Runs table ------------------------------------------------------------
 
 st.header("Runs")
 runs_df = pd.read_sql_query(
-    "SELECT id, started_at, kind, provider, model, embedding_model FROM runs ORDER BY id DESC",
+    "SELECT id, started_at, kind, provider, model, samples, temperature FROM runs ORDER BY id DESC",
     conn,
 )
 if runs_df.empty:
@@ -62,7 +71,9 @@ if baseline is None:
 
 st.success(
     f"Comparing against latest baseline: **run {baseline['id']}** "
-    f"({baseline['provider']} / {baseline['model']}, captured {baseline['started_at']})"
+    f"({baseline['provider']} / {baseline['model']}, "
+    f"samples={baseline['samples']}, temp={baseline['temperature']}, "
+    f"captured {baseline['started_at']})"
 )
 
 # --- Drift over time chart -------------------------------------------------
@@ -70,19 +81,22 @@ st.success(
 st.header("Per-prompt similarity over time")
 
 baseline_responses = responses_for_run(conn, baseline["id"])
-baseline_by_pid = {r["prompt_id"]: r for r in baseline_responses}
+baseline_groups = _group_by_prompt(baseline_responses)
+baseline_centroids: dict[str, list[float]] = {
+    pid: centroid([s["embedding"] for s in samples]) for pid, samples in baseline_groups.items()
+}
 
 eval_runs = runs_df[runs_df["kind"] == "eval"]
 
 rows = []
 for _, run in eval_runs.iterrows():
     eval_resps = responses_for_run(conn, int(run["id"]))
-    for r in eval_resps:
-        pid = r["prompt_id"]
-        b = baseline_by_pid.get(pid)
-        if b is None:
+    eval_groups = _group_by_prompt(eval_resps)
+    for pid, samples in eval_groups.items():
+        if pid not in baseline_centroids:
             continue
-        sim = cosine(b["embedding"], r["embedding"])
+        eval_centroid = centroid([s["embedding"] for s in samples])
+        sim = cosine(baseline_centroids[pid], eval_centroid)
         rows.append(
             {
                 "run_id": int(run["id"]),
@@ -102,7 +116,10 @@ else:
     sim_df = pd.DataFrame(rows)
     chart_df = sim_df.pivot(index="run_id", columns="prompt_id", values="similarity")
     st.line_chart(chart_df, height=320)
-    st.caption(f"Threshold = {threshold:.2f}. Lines that dip below it indicate drift.")
+    st.caption(
+        f"Threshold = {threshold:.2f}. Each point is the cosine similarity between the "
+        "baseline centroid and the eval centroid for that prompt."
+    )
 
     fail_count = (~sim_df["passed"]).sum()
     total_compared = len(sim_df)
@@ -115,30 +132,38 @@ else:
 
 st.header("Per-prompt explorer")
 
-all_prompt_ids = sorted({r["prompt_id"] for r in baseline_responses})
+all_prompt_ids = sorted(baseline_groups.keys())
 if all_prompt_ids:
     chosen = st.selectbox("Pick a prompt", all_prompt_ids)
-    b_resp = baseline_by_pid.get(chosen)
-    if b_resp:
+    chosen_baseline_samples = baseline_groups[chosen]
+    if chosen_baseline_samples:
+        b_first = chosen_baseline_samples[0]
         st.subheader(f"Prompt: `{chosen}`")
-        st.markdown(f"**Prompt text:** {b_resp['prompt_text']}")
-        st.markdown(f"**Baseline response (run {baseline['id']}):**")
-        st.code(b_resp["response_text"], language="text")
+        st.markdown(f"**Prompt text:** {b_first['prompt_text']}")
+        st.markdown(
+            f"**Baseline (run {baseline['id']}, {len(chosen_baseline_samples)} sample(s)):**"
+        )
+        for i, s in enumerate(chosen_baseline_samples):
+            st.code(f"[sample {i}] {s['response_text']}", language="text")
 
-        # Show every eval response for this prompt
         history_rows = []
         for _, run in eval_runs.iterrows():
-            for r in responses_for_run(conn, int(run["id"])):
-                if r["prompt_id"] == chosen:
-                    sim = cosine(b_resp["embedding"], r["embedding"])
-                    history_rows.append(
-                        {
-                            "run_id": int(run["id"]),
-                            "started_at": run["started_at"],
-                            "similarity": round(sim, 4),
-                            "response": r["response_text"],
-                        }
-                    )
+            run_resps = responses_for_run(conn, int(run["id"]))
+            run_groups = _group_by_prompt(run_resps)
+            samples_for_prompt = run_groups.get(chosen, [])
+            if not samples_for_prompt:
+                continue
+            eval_centroid = centroid([s["embedding"] for s in samples_for_prompt])
+            sim = cosine(baseline_centroids[chosen], eval_centroid)
+            history_rows.append(
+                {
+                    "run_id": int(run["id"]),
+                    "started_at": run["started_at"],
+                    "n_samples": len(samples_for_prompt),
+                    "similarity": round(sim, 4),
+                    "first_response": samples_for_prompt[0]["response_text"],
+                }
+            )
         if history_rows:
             st.markdown("**Eval history for this prompt:**")
             st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)

@@ -116,7 +116,58 @@ def test_legacy_db_migrates_provider_column(tmp_path):
     conn = connect(db_path)
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
     assert "provider" in cols
+    assert "samples" in cols
+    assert "temperature" in cols
+
+    resp_cols = {row["name"] for row in conn.execute("PRAGMA table_info(responses)").fetchall()}
+    assert "sample_idx" in resp_cols
 
     baseline = latest_baseline_run(conn)
     assert baseline is not None
     assert baseline["provider"] == "openai"
+    assert baseline["samples"] == 1
+    assert baseline["temperature"] == 0.0
+
+
+def test_insert_run_persists_samples_and_temperature(tmp_path):
+    conn = connect(tmp_path / "test.db")
+    run_id = insert_run(
+        conn,
+        model="m",
+        embedding_model="e",
+        kind="baseline",
+        provider="openai",
+        samples=3,
+        temperature=0.7,
+    )
+    row = conn.execute("SELECT samples, temperature FROM runs WHERE id = ?", (run_id,)).fetchone()
+    assert row["samples"] == 3
+    assert row["temperature"] == 0.7
+
+
+def test_insert_response_persists_sample_idx(tmp_path):
+    conn = connect(tmp_path / "test.db")
+    run_id = insert_run(
+        conn,
+        model="m",
+        embedding_model="e",
+        kind="baseline",
+        provider="openai",
+        samples=2,
+        temperature=0.5,
+    )
+    for i in range(2):
+        insert_response(
+            conn,
+            run_id=run_id,
+            prompt_id="p",
+            prompt_text="q",
+            response_text=f"r{i}",
+            embedding=[float(i), 0.0],
+            sample_idx=i,
+        )
+    rows = conn.execute(
+        "SELECT sample_idx, response_text FROM responses WHERE run_id = ? ORDER BY sample_idx",
+        (run_id,),
+    ).fetchall()
+    assert [(r["sample_idx"], r["response_text"]) for r in rows] == [(0, "r0"), (1, "r1")]

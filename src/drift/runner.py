@@ -1,10 +1,11 @@
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, Field
 
-from drift.metrics import cosine
+from drift.metrics import centroid, cosine, intra_set_avg_cosine
 from drift.providers import ChatProvider, get_embedder, get_provider
 from drift.providers.openai_embed import EMBEDDING_MODEL
 from drift.report import Comparison, build_markdown
@@ -41,8 +42,10 @@ def _capture_run(
     kind: str,
     prompts: list[Prompt],
     provider: ChatProvider,
+    samples: int,
+    temperature: float,
 ) -> tuple[int, int]:
-    """Run the prompt suite once, store results. Returns (run_id, failure_count)."""
+    """Run the prompt suite once, store N samples per prompt. Returns (run_id, failure_count)."""
     embed = get_embedder()
     run_id = insert_run(
         conn,
@@ -50,40 +53,66 @@ def _capture_run(
         embedding_model=EMBEDDING_MODEL,
         kind=kind,
         provider=provider.name,
+        samples=samples,
+        temperature=temperature,
     )
     failures = 0
     for p in prompts:
-        try:
-            response = provider.chat(p.text)
-            embedding = embed(response)
-        except Exception as exc:
-            failures += 1
-            print(f"[fail] prompt_id={p.id}: {exc}")
-            continue
+        for i in range(samples):
+            try:
+                response = provider.chat(p.text, temperature=temperature)
+                embedding = embed(response)
+            except Exception as exc:
+                failures += 1
+                print(f"[fail] prompt_id={p.id} sample={i}: {exc}")
+                continue
 
-        insert_response(
-            conn,
-            run_id=run_id,
-            prompt_id=p.id,
-            prompt_text=p.text,
-            response_text=response,
-            embedding=embedding,
-        )
-        print(f"[ok] prompt_id={p.id} ({len(response)} chars, {len(embedding)}-dim)")
+            insert_response(
+                conn,
+                run_id=run_id,
+                prompt_id=p.id,
+                prompt_text=p.text,
+                response_text=response,
+                embedding=embedding,
+                sample_idx=i,
+            )
+            print(f"[ok] prompt_id={p.id} sample={i} ({len(response)} chars, {len(embedding)}-dim)")
     return run_id, failures
 
 
-def run_baseline(prompts_path: Path, db_path: Path, provider_name: str) -> int:
+def run_baseline(
+    prompts_path: Path,
+    db_path: Path,
+    provider_name: str,
+    samples: int,
+    temperature: float,
+) -> int:
     provider = get_provider(provider_name)
     prompts = _load_prompts(prompts_path)
     conn = connect(db_path)
-    run_id, failures = _capture_run(conn, kind="baseline", prompts=prompts, provider=provider)
-    captured = len(prompts) - failures
+    run_id, failures = _capture_run(
+        conn,
+        kind="baseline",
+        prompts=prompts,
+        provider=provider,
+        samples=samples,
+        temperature=temperature,
+    )
+    captured = len(prompts) * samples - failures
+    expected = len(prompts) * samples
     print(
-        f"Baseline complete: {captured}/{len(prompts)} prompts captured "
-        f"with provider={provider.name} model={provider.chat_model}. run_id={run_id}"
+        f"Baseline complete: {captured}/{expected} responses captured "
+        f"with provider={provider.name} model={provider.chat_model} "
+        f"samples={samples} temperature={temperature}. run_id={run_id}"
     )
     return 1 if failures else 0
+
+
+def _group_by_prompt(responses: list[dict]) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for r in responses:
+        groups[r["prompt_id"]].append(r)
+    return groups
 
 
 def _build_comparisons(
@@ -91,22 +120,37 @@ def _build_comparisons(
     eval_responses: list[dict],
     threshold: float,
 ) -> list[Comparison]:
-    baseline_by_id = {r["prompt_id"]: r for r in baseline_responses}
-    eval_by_id = {r["prompt_id"]: r for r in eval_responses}
+    baseline_by_pid = _group_by_prompt(baseline_responses)
+    eval_by_pid = _group_by_prompt(eval_responses)
+
+    # Preserve eval insertion order for prompt sequencing in the report.
+    eval_pids_in_order: list[str] = []
+    seen: set[str] = set()
+    for r in eval_responses:
+        if r["prompt_id"] not in seen:
+            eval_pids_in_order.append(r["prompt_id"])
+            seen.add(r["prompt_id"])
 
     comparisons: list[Comparison] = []
-    for r in eval_responses:
-        pid = r["prompt_id"]
-        if pid in baseline_by_id:
-            sim = cosine(baseline_by_id[pid]["embedding"], r["embedding"])
+
+    for pid in eval_pids_in_order:
+        eval_samples = eval_by_pid[pid]
+        if pid in baseline_by_pid:
+            baseline_samples = baseline_by_pid[pid]
+            b_embeddings = [s["embedding"] for s in baseline_samples]
+            e_embeddings = [s["embedding"] for s in eval_samples]
+            sim = cosine(centroid(b_embeddings), centroid(e_embeddings))
             comparisons.append(
                 Comparison(
                     prompt_id=pid,
                     kind="compared",
                     similarity=sim,
-                    baseline_response=baseline_by_id[pid]["response_text"],
-                    eval_response=r["response_text"],
+                    baseline_response=baseline_samples[0]["response_text"],
+                    eval_response=eval_samples[0]["response_text"],
                     passed=sim >= threshold,
+                    n_baseline=len(baseline_samples),
+                    n_eval=len(eval_samples),
+                    baseline_noise=intra_set_avg_cosine(b_embeddings),
                 )
             )
         else:
@@ -116,22 +160,27 @@ def _build_comparisons(
                     kind="new",
                     similarity=None,
                     baseline_response=None,
-                    eval_response=r["response_text"],
+                    eval_response=eval_samples[0]["response_text"],
                     passed=None,
+                    n_baseline=0,
+                    n_eval=len(eval_samples),
+                    baseline_noise=None,
                 )
             )
 
-    for r in baseline_responses:
-        pid = r["prompt_id"]
-        if pid not in eval_by_id:
+    for pid, baseline_samples in baseline_by_pid.items():
+        if pid not in eval_by_pid:
             comparisons.append(
                 Comparison(
                     prompt_id=pid,
                     kind="missing",
                     similarity=None,
-                    baseline_response=r["response_text"],
+                    baseline_response=baseline_samples[0]["response_text"],
                     eval_response=None,
                     passed=None,
+                    n_baseline=len(baseline_samples),
+                    n_eval=0,
+                    baseline_noise=None,
                 )
             )
     return comparisons
@@ -143,6 +192,8 @@ def run_eval(
     threshold: float,
     report_dir: Path,
     provider_name: str | None,
+    samples: int | None,
+    temperature: float | None,
 ) -> int:
     prompts = _load_prompts(prompts_path)
 
@@ -165,16 +216,29 @@ def run_eval(
         )
         return 1
 
+    if samples is None:
+        samples = int(baseline["samples"])
+    if temperature is None:
+        temperature = float(baseline["temperature"])
+
     provider = get_provider(provider_name)
 
-    eval_run_id, failures = _capture_run(conn, kind="eval", prompts=prompts, provider=provider)
+    eval_run_id, failures = _capture_run(
+        conn,
+        kind="eval",
+        prompts=prompts,
+        provider=provider,
+        samples=samples,
+        temperature=temperature,
+    )
 
     baseline_responses = responses_for_run(conn, baseline["id"])
     eval_responses = responses_for_run(conn, eval_run_id)
     comparisons = _build_comparisons(baseline_responses, eval_responses, threshold)
 
     eval_run_row = conn.execute(
-        "SELECT id, started_at, model, embedding_model, kind, provider FROM runs WHERE id = ?",
+        "SELECT id, started_at, model, embedding_model, kind, provider, samples, temperature "
+        "FROM runs WHERE id = ?",
         (eval_run_id,),
     ).fetchone()
 

@@ -17,10 +17,10 @@ class OpenAIChatProvider:
             self._client = OpenAI(api_key=load_openai_api_key())
         return self._client
 
-    def chat(self, prompt: str) -> str:
+    def chat(self, prompt: str, *, temperature: float) -> str:
         resp = self._client_lazy().chat.completions.create(
             model=self.chat_model,
-            temperature=0,
+            temperature=temperature,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},

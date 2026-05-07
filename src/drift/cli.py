@@ -7,6 +7,8 @@ from drift.runner import run_baseline, run_eval
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
+_AUTO_TEMP_FOR_MULTI_SAMPLE = 0.7
+
 
 @app.callback()
 def _main() -> None:
@@ -19,6 +21,25 @@ def _validate_provider(value: str | None) -> str | None:
             f"Unknown provider {value!r}. Choices: {', '.join(VALID_PROVIDERS)}."
         )
     return value
+
+
+def _validate_samples(value: int) -> int:
+    if value < 1:
+        raise typer.BadParameter("--samples must be >= 1.")
+    return value
+
+
+def _resolve_temperature(samples: int, temperature: float | None) -> float:
+    """If multi-sample and the user didn't pin a temperature, bump to a useful default."""
+    if temperature is not None:
+        return temperature
+    if samples > 1:
+        typer.echo(
+            f"Note: --samples {samples} > 1 with no --temperature; "
+            f"using {_AUTO_TEMP_FOR_MULTI_SAMPLE} so samples are not deterministic."
+        )
+        return _AUTO_TEMP_FOR_MULTI_SAMPLE
+    return 0.0
 
 
 @app.command()
@@ -40,9 +61,24 @@ def baseline(
         callback=_validate_provider,
         help=f"Chat provider. Choices: {', '.join(VALID_PROVIDERS)}.",
     ),
+    samples: int = typer.Option(
+        1,
+        "--samples",
+        callback=_validate_samples,
+        help="Number of chat samples per prompt (>=1). Use >1 to measure provider noise.",
+    ),
+    temperature: float = typer.Option(
+        None,
+        "--temperature",
+        help=(
+            "Chat temperature. Default 0.0 for single-sample, "
+            f"{_AUTO_TEMP_FOR_MULTI_SAMPLE} for multi-sample."
+        ),
+    ),
 ) -> None:
     """Run the prompt suite once and store the responses as a baseline."""
-    exit_code = run_baseline(prompts, db, provider)
+    temp = _resolve_temperature(samples, temperature)
+    exit_code = run_baseline(prompts, db, provider, samples, temp)
     raise typer.Exit(exit_code)
 
 
@@ -79,9 +115,25 @@ def run(
             "Defaults to the provider used by the latest baseline."
         ),
     ),
+    samples: int | None = typer.Option(
+        None,
+        "--samples",
+        help="Samples per prompt. Defaults to whatever the latest baseline used.",
+    ),
+    temperature: float | None = typer.Option(
+        None,
+        "--temperature",
+        help="Chat temperature. Defaults to whatever the latest baseline used.",
+    ),
 ) -> None:
     """Run an evaluation and compare each prompt against the latest baseline."""
-    exit_code = run_eval(prompts, db, threshold, report_dir, provider)
+    if samples is not None and samples < 1:
+        raise typer.BadParameter("--samples must be >= 1.")
+    # If user passed --samples > 1 but no --temperature, auto-bump too.
+    resolved_temp = (
+        _resolve_temperature(samples, temperature) if samples is not None else temperature
+    )
+    exit_code = run_eval(prompts, db, threshold, report_dir, provider, samples, resolved_temp)
     raise typer.Exit(exit_code)
 
 
