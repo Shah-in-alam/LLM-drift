@@ -68,6 +68,41 @@ llm-drift-detector/
 └── README.md
 ```
 
+## Schedule it
+
+Run `drift run` automatically on an interval so drift gets caught between manual checks. The repo ships helpers for both common platforms.
+
+### Linux / macOS (cron)
+
+`scripts/cron_example.sh` `cd`s into the repo, runs `uv run drift run`, and propagates the exit code so cron can email on FAIL.
+
+```bash
+crontab -e
+# every 6 hours, with output appended to logs/drift-run.log:
+0 */6 * * * /path/to/LLM-drift/scripts/cron_example.sh >> /path/to/LLM-drift/logs/drift-run.log 2>&1
+```
+
+Any extra args after the script path are forwarded to `drift run` (e.g. add `--threshold 0.97` for a tighter check).
+
+### Windows (Task Scheduler)
+
+```powershell
+# register a task that runs every 6 hours (default)
+.\scripts\task_scheduler.ps1
+
+# different interval
+.\scripts\task_scheduler.ps1 -IntervalHours 12
+
+# remove it
+.\scripts\task_scheduler.ps1 -Unregister
+```
+
+The task name defaults to `LLM-DriftMonitor` and writes stdout+stderr to `logs/drift-run.log`. Inspect or manage it via:
+
+```powershell
+Get-ScheduledTask -TaskName "LLM-DriftMonitor"
+```
+
 ## Roadmap
 
 **v0.1 — Working prototype**
