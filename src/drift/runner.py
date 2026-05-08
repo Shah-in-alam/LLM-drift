@@ -6,6 +6,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from drift.metrics import centroid, cosine, intra_set_avg_cosine
+from drift.notifications.slack import FailedPromptSummary, notify_drift
 from drift.providers import ChatProvider, get_embedder, get_provider
 from drift.providers.openai_embed import EMBEDDING_MODEL
 from drift.report import Comparison, build_markdown
@@ -254,7 +255,29 @@ def run_eval(
     report_path.write_text(markdown, encoding="utf-8")
 
     failed_compared = [c for c in comparisons if c.kind == "compared" and not c.passed]
+    total_compared = sum(1 for c in comparisons if c.kind == "compared")
     result = "FAIL" if failed_compared else "PASS"
     print(f"Drift report: {result} — wrote {report_path}")
+
+    if failed_compared:
+        notify_drift(
+            eval_run_id=eval_run_id,
+            baseline_run_id=int(baseline["id"]),
+            provider=provider.name,
+            model=provider.chat_model,
+            threshold=threshold,
+            failed_count=len(failed_compared),
+            total_compared=total_compared,
+            failed_prompts=[
+                FailedPromptSummary(
+                    prompt_id=c.prompt_id,
+                    similarity=c.similarity if c.similarity is not None else 0.0,
+                    baseline_excerpt=c.baseline_response or "",
+                    eval_excerpt=c.eval_response or "",
+                )
+                for c in failed_compared
+            ],
+            report_path=str(report_path),
+        )
 
     return 1 if (failed_compared or failures) else 0
