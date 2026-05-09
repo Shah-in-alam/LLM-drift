@@ -9,6 +9,7 @@ from drift.metrics import (
     intra_set_avg_cosine,
     kl_divergence,
     psi,
+    token_edit_distance,
 )
 
 
@@ -87,3 +88,41 @@ def test_kl_divergence_asymmetric():
     p = [0.9, 0.1]
     q = [0.5, 0.5]
     assert kl_divergence(p, q) != kl_divergence(q, p)
+
+
+def test_token_edit_distance_identical_is_zero():
+    assert token_edit_distance("the answer is 42", "the answer is 42") == 0.0
+
+
+def test_token_edit_distance_both_empty_is_zero():
+    assert token_edit_distance("", "") == 0.0
+
+
+def test_token_edit_distance_one_empty_is_one():
+    assert token_edit_distance("hello world", "") == 1.0
+    assert token_edit_distance("", "hello world") == 1.0
+
+
+def test_token_edit_distance_one_word_diff_small():
+    # 1 substitution out of 4 tokens → 0.25.
+    assert math.isclose(token_edit_distance("the answer is 42", "the answer is 43"), 0.25)
+
+
+def test_token_edit_distance_added_format_tokens_signals_drift():
+    # Cosine semantics would say "same answer" (0.99-ish), but adding 4 leading
+    # format tokens around the kept "611" yields a large normalized edit distance.
+    base = "611"
+    bullet_paraphrase = "* The answer is 611"
+    # 1 token vs 5 tokens, sharing only "611" → 4 insertions / max(1,5) = 0.8.
+    assert math.isclose(token_edit_distance(base, bullet_paraphrase), 0.8)
+    # Should comfortably trip the default 0.3 edit threshold.
+    assert token_edit_distance(base, bullet_paraphrase) > 0.3
+
+
+def test_token_edit_distance_normalized_to_unit_interval():
+    d = token_edit_distance("hello there friend", "hi there pal")
+    assert 0.0 <= d <= 1.0
+
+
+def test_token_edit_distance_handles_extra_whitespace():
+    assert token_edit_distance("a b  c", " a   b c") == 0.0

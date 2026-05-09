@@ -73,6 +73,41 @@ def psi(p: Sequence[float], q: Sequence[float]) -> float:
     return float(np.sum((pa - qa) * np.log(pa / qa)))
 
 
+def token_edit_distance(a: str, b: str) -> float:
+    """Normalized token-level Levenshtein distance in [0.0, 1.0].
+
+    Splits both strings on whitespace and runs Wagner-Fischer over the token
+    lists, then normalizes by the longer sequence so it can share a threshold
+    with cosine similarity. 0.0 = identical token sequences, 1.0 = no overlap.
+
+    Tracks format drift that semantic embeddings smooth over: a model that
+    starts adding leading "Sure!" openers or bullet points produces tiny
+    cosine deltas but large token-edit deltas.
+    """
+    tokens_a = a.split()
+    tokens_b = b.split()
+    n, m = len(tokens_a), len(tokens_b)
+    if n == 0 and m == 0:
+        return 0.0
+    if n == 0 or m == 0:
+        return 1.0
+
+    prev = list(range(m + 1))
+    for i in range(1, n + 1):
+        curr = [i] + [0] * m
+        ai = tokens_a[i - 1]
+        for j in range(1, m + 1):
+            cost = 0 if ai == tokens_b[j - 1] else 1
+            curr[j] = min(
+                prev[j] + 1,  # deletion
+                curr[j - 1] + 1,  # insertion
+                prev[j - 1] + cost,  # substitution
+            )
+        prev = curr
+
+    return prev[m] / max(n, m)
+
+
 def kl_divergence(p: Sequence[float], q: Sequence[float]) -> float:
     """KL(p || q). Both inputs treated as probability distributions of the same shape."""
     pa = np.asarray(p, dtype=np.float64)

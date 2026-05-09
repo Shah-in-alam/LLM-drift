@@ -138,6 +138,14 @@ def run(
         "--rolling-window",
         help="Number of recent eval runs (including this one) used for PSI / KL.",
     ),
+    edit_threshold: float = typer.Option(
+        0.3,
+        "--edit-threshold",
+        help=(
+            "Maximum normalized token-edit distance per prompt before format drift "
+            "is flagged. 0.0 = identical text, 1.0 = no token overlap."
+        ),
+    ),
 ) -> None:
     """Run an evaluation and compare each prompt against the latest baseline."""
     if samples is not None and samples < 1:
@@ -158,6 +166,7 @@ def run(
         resolved_temp,
         psi_threshold=psi_threshold,
         rolling_window=rolling_window,
+        edit_threshold=edit_threshold,
     )
     raise typer.Exit(exit_code)
 

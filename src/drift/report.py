@@ -8,10 +8,12 @@ class Comparison:
     similarity: float | None  # cosine of (baseline centroid, eval centroid); only when "compared"
     baseline_response: str | None  # one example, for human readability
     eval_response: str | None
-    passed: bool | None  # only when "compared"
+    passed: bool | None  # cosine threshold check; only when "compared"
     n_baseline: int = 0  # number of baseline samples
     n_eval: int = 0  # number of eval samples
     baseline_noise: float | None = None  # avg pairwise cosine within baseline (1.0 if n=1)
+    edit_distance: float | None = None  # mean normalized token-edit distance, [0,1]
+    edit_passed: bool | None = None  # edit_distance < edit_threshold
 
 
 @dataclass(frozen=True)
@@ -38,8 +40,9 @@ def build_markdown(
     rolling = rolling or {}
     compared = [c for c in comparisons if c.kind == "compared"]
     cosine_failed = [c for c in compared if not c.passed]
+    edit_failed = [c for c in compared if c.edit_passed is False]
     psi_failed = [m for m in rolling.values() if m.psi_passed is False]
-    result = "FAIL" if (cosine_failed or psi_failed) else "PASS"
+    result = "FAIL" if (cosine_failed or edit_failed or psi_failed) else "PASS"
 
     lines = [
         f"# Drift report — run {eval_run['id']} (eval) vs run {baseline_run['id']} (baseline)",
@@ -59,6 +62,7 @@ def build_markdown(
         (
             f"- result: {result} "
             f"({len(cosine_failed)}/{len(compared)} below cosine threshold, "
+            f"{len(edit_failed)} above edit threshold, "
             f"{len(psi_failed)} above PSI threshold)"
         ),
         "",
@@ -69,14 +73,19 @@ def build_markdown(
 
     for c in primary:
         if c.kind == "compared":
-            mark = "✓" if c.passed else "✗"
+            cosine_mark = "✓" if c.passed else "✗"
             extras = (
                 f"n_baseline={c.n_baseline}, n_eval={c.n_eval}, "
                 f"baseline_noise={c.baseline_noise:.3f}"
                 if c.baseline_noise is not None
                 else f"n_baseline={c.n_baseline}, n_eval={c.n_eval}"
             )
-            lines.append(f"## {c.prompt_id} — sim {c.similarity:.3f} {mark} ({extras})")
+            head = f"## {c.prompt_id} — sim {c.similarity:.3f} {cosine_mark}"
+            if c.edit_distance is not None:
+                edit_mark = "✓" if c.edit_passed else "✗"
+                head += f", edit {c.edit_distance:.3f} {edit_mark}"
+            head += f" ({extras})"
+            lines.append(head)
 
             metric = rolling.get(c.prompt_id)
             if metric is not None:

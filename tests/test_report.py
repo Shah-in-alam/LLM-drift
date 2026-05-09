@@ -42,7 +42,10 @@ def test_markdown_fail_with_mixed_comparisons():
     assert "# Drift report — run 7 (eval) vs run 1 (baseline)" in md
     assert "- provider: openai (gpt-4o-mini)" in md
     assert "- threshold: 0.95" in md
-    assert "result: FAIL (1/2 below cosine threshold, 0 above PSI threshold)" in md
+    assert (
+        "result: FAIL (1/2 below cosine threshold, "
+        "0 above edit threshold, 0 above PSI threshold)" in md
+    )
     assert "## greet — sim 0.987 ✓" in md
     assert "## math — sim 0.823 ✗" in md
     assert "## brand_new — [new]" in md
@@ -63,7 +66,10 @@ def test_markdown_pass_when_all_above_threshold():
         comparisons=comparisons,
         threshold=0.95,
     )
-    assert "result: PASS (0/2 below cosine threshold, 0 above PSI threshold)" in md
+    assert (
+        "result: PASS (0/2 below cosine threshold, "
+        "0 above edit threshold, 0 above PSI threshold)" in md
+    )
 
 
 def test_markdown_includes_sample_metadata():
@@ -130,7 +136,10 @@ def test_markdown_renders_rolling_psi_fail_flips_overall_result():
         rolling_window=7,
     )
     # Cosine passed but PSI failed → overall FAIL with 1 above PSI threshold.
-    assert "result: FAIL (0/1 below cosine threshold, 1 above PSI threshold)" in md
+    assert (
+        "result: FAIL (0/1 below cosine threshold, "
+        "0 above edit threshold, 1 above PSI threshold)" in md
+    )
     assert "rolling psi 0.500 ✗" in md
 
 
@@ -152,3 +161,61 @@ def test_markdown_renders_degenerate_rolling_when_baseline_singleton():
         rolling_window=7,
     )
     assert "rolling: not computed (baseline needs >=2 samples)" in md
+
+
+def test_markdown_renders_edit_distance_pass():
+    eval_run, baseline_run = _runs()
+    comparisons = [
+        Comparison(
+            prompt_id="greet",
+            kind="compared",
+            similarity=0.99,
+            baseline_response="Hi!",
+            eval_response="Hello!",
+            passed=True,
+            n_baseline=1,
+            n_eval=1,
+            baseline_noise=1.0,
+            edit_distance=0.05,
+            edit_passed=True,
+        ),
+    ]
+    md = build_markdown(
+        eval_run=eval_run,
+        baseline_run=baseline_run,
+        comparisons=comparisons,
+        threshold=0.95,
+    )
+    assert "sim 0.990 ✓, edit 0.050 ✓" in md
+
+
+def test_markdown_renders_edit_distance_fail_flips_overall_result():
+    eval_run, baseline_run = _runs()
+    comparisons = [
+        # Cosine PASSES (semantically the same answer) but edit FAILS
+        # because the model started prepending bullets.
+        Comparison(
+            prompt_id="math",
+            kind="compared",
+            similarity=0.99,
+            baseline_response="611",
+            eval_response="* The answer is 611",
+            passed=True,
+            n_baseline=1,
+            n_eval=1,
+            baseline_noise=1.0,
+            edit_distance=0.85,
+            edit_passed=False,
+        ),
+    ]
+    md = build_markdown(
+        eval_run=eval_run,
+        baseline_run=baseline_run,
+        comparisons=comparisons,
+        threshold=0.95,
+    )
+    assert (
+        "result: FAIL (0/1 below cosine threshold, "
+        "1 above edit threshold, 0 above PSI threshold)" in md
+    )
+    assert "sim 0.990 ✓, edit 0.850 ✗" in md

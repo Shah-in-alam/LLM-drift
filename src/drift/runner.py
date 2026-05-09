@@ -5,7 +5,15 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from drift.metrics import centroid, cosine, histogram, intra_set_avg_cosine, kl_divergence, psi
+from drift.metrics import (
+    centroid,
+    cosine,
+    histogram,
+    intra_set_avg_cosine,
+    kl_divergence,
+    psi,
+    token_edit_distance,
+)
 from drift.notifications.slack import FailedPromptSummary, notify_drift
 from drift.providers import ChatProvider, get_embedder, get_provider
 from drift.providers.openai_embed import EMBEDDING_MODEL
@@ -117,10 +125,16 @@ def _group_by_prompt(responses: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
+def _mean_pairwise_edit(baseline_texts: list[str], eval_texts: list[str]) -> float:
+    distances = [token_edit_distance(b, e) for b in baseline_texts for e in eval_texts]
+    return sum(distances) / len(distances) if distances else 0.0
+
+
 def _build_comparisons(
     baseline_responses: list[dict],
     eval_responses: list[dict],
     threshold: float,
+    edit_threshold: float,
 ) -> list[Comparison]:
     baseline_by_pid = _group_by_prompt(baseline_responses)
     eval_by_pid = _group_by_prompt(eval_responses)
@@ -142,6 +156,10 @@ def _build_comparisons(
             b_embeddings = [s["embedding"] for s in baseline_samples]
             e_embeddings = [s["embedding"] for s in eval_samples]
             sim = cosine(centroid(b_embeddings), centroid(e_embeddings))
+            edit = _mean_pairwise_edit(
+                [s["response_text"] for s in baseline_samples],
+                [s["response_text"] for s in eval_samples],
+            )
             comparisons.append(
                 Comparison(
                     prompt_id=pid,
@@ -153,6 +171,8 @@ def _build_comparisons(
                     n_baseline=len(baseline_samples),
                     n_eval=len(eval_samples),
                     baseline_noise=intra_set_avg_cosine(b_embeddings),
+                    edit_distance=edit,
+                    edit_passed=edit < edit_threshold,
                 )
             )
         else:
@@ -258,6 +278,7 @@ def run_eval(
     temperature: float | None,
     psi_threshold: float = 0.25,
     rolling_window: int = 7,
+    edit_threshold: float = 0.3,
 ) -> int:
     prompts = _load_prompts(prompts_path)
 
@@ -298,7 +319,7 @@ def run_eval(
 
     baseline_responses = responses_for_run(conn, baseline["id"])
     eval_responses = responses_for_run(conn, eval_run_id)
-    comparisons = _build_comparisons(baseline_responses, eval_responses, threshold)
+    comparisons = _build_comparisons(baseline_responses, eval_responses, threshold, edit_threshold)
     rolling = _build_rolling_metrics(
         conn,
         baseline_responses=baseline_responses,
@@ -327,9 +348,10 @@ def run_eval(
     report_path.write_text(markdown, encoding="utf-8")
 
     failed_compared = [c for c in comparisons if c.kind == "compared" and not c.passed]
+    edit_failed = [c for c in comparisons if c.kind == "compared" and c.edit_passed is False]
     total_compared = sum(1 for c in comparisons if c.kind == "compared")
     psi_failed = [m for m in rolling.values() if m.psi_passed is False]
-    has_drift = bool(failed_compared or psi_failed)
+    has_drift = bool(failed_compared or edit_failed or psi_failed)
     result = "FAIL" if has_drift else "PASS"
     print(f"Drift report: {result} — wrote {report_path}")
 
