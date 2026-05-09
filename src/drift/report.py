@@ -14,6 +14,9 @@ class Comparison:
     baseline_noise: float | None = None  # avg pairwise cosine within baseline (1.0 if n=1)
     edit_distance: float | None = None  # mean normalized token-edit distance, [0,1]
     edit_passed: bool | None = None  # edit_distance < edit_threshold
+    p_value: float | None = None  # Mann-Whitney U: signal stochastically lower than noise
+    effect_size: float | None = None  # mean(noise) - mean(signal); positive = drift direction
+    significant_drift: bool | None = None  # effect > delta AND p < alpha
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,12 @@ def build_markdown(
                 head += f", edit {c.edit_distance:.3f} {edit_mark}"
             head += f" ({extras})"
             lines.append(head)
+
+            if c.p_value is not None:
+                conf = "significant" if c.significant_drift else "not significant"
+                lines.append(
+                    f"- significance: p={c.p_value:.3g}, effect={c.effect_size:.3f}, {conf}"
+                )
 
             metric = rolling.get(c.prompt_id)
             if metric is not None:

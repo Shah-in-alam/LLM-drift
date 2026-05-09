@@ -5,6 +5,7 @@ import pytest
 from drift.metrics import (
     centroid,
     cosine,
+    drift_significance,
     histogram,
     intra_set_avg_cosine,
     kl_divergence,
@@ -126,3 +127,61 @@ def test_token_edit_distance_normalized_to_unit_interval():
 
 def test_token_edit_distance_handles_extra_whitespace():
     assert token_edit_distance("a b  c", " a   b c") == 0.0
+
+
+def test_drift_significance_detects_clear_drift():
+    """Eval responses are clearly different from baseline → low p, positive effect."""
+    # Baseline: tightly clustered around (1.0, 0.0)
+    baseline = [
+        [1.0, 0.01],
+        [1.0, -0.01],
+        [0.99, 0.02],
+        [1.0, 0.0],
+        [0.99, -0.02],
+    ]
+    # Eval: rotated to (0.0, 1.0) — very different
+    eval_ = [
+        [0.01, 1.0],
+        [-0.01, 1.0],
+        [0.0, 0.99],
+        [0.02, 1.0],
+        [-0.02, 0.99],
+    ]
+    result = drift_significance(baseline, eval_)
+    assert result is not None
+    effect, p = result
+    assert effect > 0.5, f"expected large positive effect, got {effect}"
+    assert p < 0.05, f"expected significant p, got {p}"
+
+
+def test_drift_significance_no_drift_when_eval_matches_baseline():
+    """Eval is drawn from the same distribution as baseline → not significant."""
+    baseline = [
+        [1.0, 0.01],
+        [1.0, -0.01],
+        [0.99, 0.02],
+        [1.0, 0.0],
+        [0.99, -0.02],
+    ]
+    # Eval samples from the same neighborhood — no drift
+    eval_ = [
+        [1.0, 0.0],
+        [0.99, 0.01],
+        [1.0, -0.02],
+    ]
+    result = drift_significance(baseline, eval_)
+    assert result is not None
+    effect, p = result
+    # Effect should be tiny in either direction.
+    assert abs(effect) < 0.05
+    # p should not be tiny — we're not seeing a real shift.
+    assert p > 0.05
+
+
+def test_drift_significance_degenerate_with_single_baseline_sample():
+    # Baseline self-cosine distribution is empty when n < 2.
+    assert drift_significance([[1.0, 0.0]], [[1.0, 0.0], [1.0, 0.01]]) is None
+
+
+def test_drift_significance_degenerate_with_no_eval_samples():
+    assert drift_significance([[1.0, 0.0], [1.0, 0.01]], []) is None

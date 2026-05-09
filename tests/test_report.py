@@ -219,3 +219,60 @@ def test_markdown_renders_edit_distance_fail_flips_overall_result():
         "1 above edit threshold, 0 above PSI threshold)" in md
     )
     assert "sim 0.990 ✓, edit 0.850 ✗" in md
+
+
+def test_markdown_renders_significance_when_present():
+    eval_run, baseline_run = _runs()
+    comparisons = [
+        Comparison(
+            prompt_id="greet",
+            kind="compared",
+            similarity=0.85,
+            baseline_response="Hi",
+            eval_response="Hello!",
+            passed=False,
+            n_baseline=5,
+            n_eval=5,
+            baseline_noise=0.99,
+            edit_distance=0.4,
+            edit_passed=False,
+            p_value=0.003,
+            effect_size=0.12,
+            significant_drift=True,
+        ),
+    ]
+    md = build_markdown(
+        eval_run=eval_run,
+        baseline_run=baseline_run,
+        comparisons=comparisons,
+        threshold=0.95,
+    )
+    # Format e.g.: "- significance: p=0.003, effect=0.120, significant"
+    assert "significance: p=0.003" in md
+    assert "effect=0.120" in md
+    assert "significant" in md
+
+
+def test_markdown_omits_significance_block_when_unavailable():
+    eval_run, baseline_run = _runs()
+    comparisons = [
+        Comparison(
+            prompt_id="greet",
+            kind="compared",
+            similarity=0.99,
+            baseline_response="Hi",
+            eval_response="Hello!",
+            passed=True,
+            n_baseline=1,
+            n_eval=1,
+            baseline_noise=1.0,
+            # No significance fields populated (single-sample baseline).
+        ),
+    ]
+    md = build_markdown(
+        eval_run=eval_run,
+        baseline_run=baseline_run,
+        comparisons=comparisons,
+        threshold=0.95,
+    )
+    assert "significance:" not in md

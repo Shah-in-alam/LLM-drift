@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 import numpy as np
+from scipy.stats import mannwhitneyu
 
 
 def cosine(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.ndarray) -> float:
@@ -106,6 +107,49 @@ def token_edit_distance(a: str, b: str) -> float:
         prev = curr
 
     return prev[m] / max(n, m)
+
+
+def drift_significance(
+    baseline_embeddings: Sequence[Sequence[float]],
+    eval_embeddings: Sequence[Sequence[float]],
+) -> tuple[float, float] | None:
+    """Mann-Whitney U test of "is signal-vs-baseline lower than baseline self-cosine?".
+
+    Builds two distributions:
+    - **noise**: pairwise cosines within the baseline samples (the natural floor).
+    - **signal**: cosines between every (baseline, eval) sample pair.
+
+    Returns ``(effect_size, p_value)`` where:
+    - ``effect_size = mean(noise) - mean(signal)`` — positive means signal dropped
+      below the noise floor (i.e. drift direction).
+    - ``p_value`` from a one-sided Mann-Whitney U with ``alternative="less"`` —
+      small means signal really is lower than noise, not just by chance.
+
+    Returns ``None`` when the test isn't meaningful (need >=2 baseline samples
+    and >=1 eval sample to form both distributions).
+    """
+    n_baseline = len(baseline_embeddings)
+    n_eval = len(eval_embeddings)
+    if n_baseline < 2 or n_eval < 1:
+        return None
+
+    noise = [
+        cosine(baseline_embeddings[i], baseline_embeddings[j])
+        for i in range(n_baseline)
+        for j in range(i + 1, n_baseline)
+    ]
+    signal = [cosine(b, e) for b in baseline_embeddings for e in eval_embeddings]
+    if not noise or not signal:
+        return None
+
+    effect = float(np.mean(noise)) - float(np.mean(signal))
+    try:
+        result = mannwhitneyu(signal, noise, alternative="less")
+        p_value = float(result.pvalue)
+    except ValueError:
+        # Fully tied distributions → no separation, no drift.
+        p_value = 1.0
+    return effect, p_value
 
 
 def kl_divergence(p: Sequence[float], q: Sequence[float]) -> float:

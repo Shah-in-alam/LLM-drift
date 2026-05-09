@@ -146,6 +146,22 @@ def run(
             "is flagged. 0.0 = identical text, 1.0 = no token overlap."
         ),
     ),
+    p_threshold: float = typer.Option(
+        0.05,
+        "--p-threshold",
+        help=(
+            "Mann-Whitney U p-value below which a drift is statistically "
+            "significant. Reported alongside cosine; does not gate FAIL on its own."
+        ),
+    ),
+    effect_delta: float = typer.Option(
+        0.01,
+        "--effect-delta",
+        help=(
+            "Minimum (mean baseline self-cosine) - (mean baseline-vs-eval cosine) "
+            "for a drift to be considered 'significant'. Filters out tiny noise."
+        ),
+    ),
 ) -> None:
     """Run an evaluation and compare each prompt against the latest baseline."""
     if samples is not None and samples < 1:
@@ -167,6 +183,8 @@ def run(
         psi_threshold=psi_threshold,
         rolling_window=rolling_window,
         edit_threshold=edit_threshold,
+        p_threshold=p_threshold,
+        effect_delta=effect_delta,
     )
     raise typer.Exit(exit_code)
 

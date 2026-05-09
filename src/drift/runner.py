@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from drift.metrics import (
     centroid,
     cosine,
+    drift_significance,
     histogram,
     intra_set_avg_cosine,
     kl_divergence,
@@ -135,6 +136,8 @@ def _build_comparisons(
     eval_responses: list[dict],
     threshold: float,
     edit_threshold: float,
+    p_threshold: float,
+    effect_delta: float,
 ) -> list[Comparison]:
     baseline_by_pid = _group_by_prompt(baseline_responses)
     eval_by_pid = _group_by_prompt(eval_responses)
@@ -160,6 +163,12 @@ def _build_comparisons(
                 [s["response_text"] for s in baseline_samples],
                 [s["response_text"] for s in eval_samples],
             )
+            sig_result = drift_significance(b_embeddings, e_embeddings)
+            if sig_result is None:
+                effect, p_val, significant = None, None, None
+            else:
+                effect, p_val = sig_result
+                significant = (effect > effect_delta) and (p_val < p_threshold)
             comparisons.append(
                 Comparison(
                     prompt_id=pid,
@@ -173,6 +182,9 @@ def _build_comparisons(
                     baseline_noise=intra_set_avg_cosine(b_embeddings),
                     edit_distance=edit,
                     edit_passed=edit < edit_threshold,
+                    p_value=p_val,
+                    effect_size=effect,
+                    significant_drift=significant,
                 )
             )
         else:
@@ -279,6 +291,8 @@ def run_eval(
     psi_threshold: float = 0.25,
     rolling_window: int = 7,
     edit_threshold: float = 0.3,
+    p_threshold: float = 0.05,
+    effect_delta: float = 0.01,
 ) -> int:
     prompts = _load_prompts(prompts_path)
 
@@ -319,7 +333,14 @@ def run_eval(
 
     baseline_responses = responses_for_run(conn, baseline["id"])
     eval_responses = responses_for_run(conn, eval_run_id)
-    comparisons = _build_comparisons(baseline_responses, eval_responses, threshold, edit_threshold)
+    comparisons = _build_comparisons(
+        baseline_responses,
+        eval_responses,
+        threshold,
+        edit_threshold,
+        p_threshold,
+        effect_delta,
+    )
     rolling = _build_rolling_metrics(
         conn,
         baseline_responses=baseline_responses,
