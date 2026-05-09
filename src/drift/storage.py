@@ -117,6 +117,18 @@ def latest_baseline_run(conn: sqlite3.Connection) -> dict | None:
     return dict(row) if row else None
 
 
+def recent_eval_runs(conn: sqlite3.Connection, *, limit: int) -> list[dict]:
+    """Most recent `limit` eval runs, newest first."""
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    rows = conn.execute(
+        "SELECT id, started_at, model, embedding_model, kind, provider, samples, temperature "
+        "FROM runs WHERE kind = 'eval' ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def responses_for_run(conn: sqlite3.Connection, run_id: int) -> list[dict]:
     rows = conn.execute(
         "SELECT id, run_id, prompt_id, prompt_text, response_text, embedding_json, sample_idx "

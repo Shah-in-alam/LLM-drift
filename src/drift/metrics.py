@@ -35,3 +35,50 @@ def intra_set_avg_cosine(vectors: Sequence[Sequence[float]]) -> float:
         for j in range(i + 1, n):
             sims.append(cosine(vectors[i], vectors[j]))
     return float(np.mean(sims))
+
+
+_PROB_EPSILON = 1e-6  # floor for zero-bin probabilities; standard PSI/KL convention
+
+
+def histogram(
+    values: Sequence[float],
+    *,
+    bins: int = 10,
+    range_: tuple[float, float] = (0.0, 1.0),
+) -> list[float]:
+    """Normalized histogram (probabilities sum to 1). Empty input → uniform zeros."""
+    if len(values) == 0:
+        return [0.0] * bins
+    counts, _ = np.histogram(values, bins=bins, range=range_)
+    total = counts.sum()
+    if total == 0:
+        return [0.0] * bins
+    return [float(c) for c in counts / total]
+
+
+def psi(p: Sequence[float], q: Sequence[float]) -> float:
+    """Population Stability Index between two same-shape probability distributions.
+
+    PSI ≈ 0 → distributions match.
+    PSI < 0.10 → no significant shift.
+    PSI 0.10–0.25 → moderate shift.
+    PSI > 0.25 → major shift.
+    """
+    pa = np.asarray(p, dtype=np.float64)
+    qa = np.asarray(q, dtype=np.float64)
+    if pa.shape != qa.shape:
+        raise ValueError("psi: distributions must have the same shape")
+    pa = np.where(pa <= 0, _PROB_EPSILON, pa)
+    qa = np.where(qa <= 0, _PROB_EPSILON, qa)
+    return float(np.sum((pa - qa) * np.log(pa / qa)))
+
+
+def kl_divergence(p: Sequence[float], q: Sequence[float]) -> float:
+    """KL(p || q). Both inputs treated as probability distributions of the same shape."""
+    pa = np.asarray(p, dtype=np.float64)
+    qa = np.asarray(q, dtype=np.float64)
+    if pa.shape != qa.shape:
+        raise ValueError("kl_divergence: distributions must have the same shape")
+    pa = np.where(pa <= 0, _PROB_EPSILON, pa)
+    qa = np.where(qa <= 0, _PROB_EPSILON, qa)
+    return float(np.sum(pa * np.log(pa / qa)))

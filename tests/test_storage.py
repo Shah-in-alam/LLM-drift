@@ -6,6 +6,7 @@ from drift.storage import (
     insert_response,
     insert_run,
     latest_baseline_run,
+    recent_eval_runs,
     responses_for_run,
 )
 
@@ -143,6 +144,26 @@ def test_insert_run_persists_samples_and_temperature(tmp_path):
     row = conn.execute("SELECT samples, temperature FROM runs WHERE id = ?", (run_id,)).fetchone()
     assert row["samples"] == 3
     assert row["temperature"] == 0.7
+
+
+def test_recent_eval_runs_returns_newest_first_limited(tmp_path):
+    conn = connect(tmp_path / "test.db")
+    insert_run(conn, model="m", embedding_model="e", kind="baseline", provider="openai")
+    eval_ids = [
+        insert_run(conn, model="m", embedding_model="e", kind="eval", provider="openai")
+        for _ in range(4)
+    ]
+    insert_run(conn, model="m", embedding_model="e", kind="baseline", provider="openai")
+
+    rows = recent_eval_runs(conn, limit=2)
+    assert [r["id"] for r in rows] == [eval_ids[-1], eval_ids[-2]]
+    assert all(r["kind"] == "eval" for r in rows)
+
+
+def test_recent_eval_runs_empty_when_no_eval_runs(tmp_path):
+    conn = connect(tmp_path / "test.db")
+    insert_run(conn, model="m", embedding_model="e", kind="baseline", provider="openai")
+    assert recent_eval_runs(conn, limit=5) == []
 
 
 def test_insert_response_persists_sample_idx(tmp_path):

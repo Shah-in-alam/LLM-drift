@@ -125,15 +125,40 @@ def run(
         "--temperature",
         help="Chat temperature. Defaults to whatever the latest baseline used.",
     ),
+    psi_threshold: float = typer.Option(
+        0.25,
+        "--psi-threshold",
+        help=(
+            "Maximum allowed PSI between baseline and the rolling eval-run window. "
+            "0.10 = no shift, 0.10–0.25 = moderate, >0.25 = major shift."
+        ),
+    ),
+    rolling_window: int = typer.Option(
+        7,
+        "--rolling-window",
+        help="Number of recent eval runs (including this one) used for PSI / KL.",
+    ),
 ) -> None:
     """Run an evaluation and compare each prompt against the latest baseline."""
     if samples is not None and samples < 1:
         raise typer.BadParameter("--samples must be >= 1.")
+    if rolling_window < 1:
+        raise typer.BadParameter("--rolling-window must be >= 1.")
     # If user passed --samples > 1 but no --temperature, auto-bump too.
     resolved_temp = (
         _resolve_temperature(samples, temperature) if samples is not None else temperature
     )
-    exit_code = run_eval(prompts, db, threshold, report_dir, provider, samples, resolved_temp)
+    exit_code = run_eval(
+        prompts,
+        db,
+        threshold,
+        report_dir,
+        provider,
+        samples,
+        resolved_temp,
+        psi_threshold=psi_threshold,
+        rolling_window=rolling_window,
+    )
     raise typer.Exit(exit_code)
 
 

@@ -5,16 +5,17 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from drift.metrics import centroid, cosine, intra_set_avg_cosine
+from drift.metrics import centroid, cosine, histogram, intra_set_avg_cosine, kl_divergence, psi
 from drift.notifications.slack import FailedPromptSummary, notify_drift
 from drift.providers import ChatProvider, get_embedder, get_provider
 from drift.providers.openai_embed import EMBEDDING_MODEL
-from drift.report import Comparison, build_markdown
+from drift.report import Comparison, RollingMetric, build_markdown
 from drift.storage import (
     connect,
     insert_response,
     insert_run,
     latest_baseline_run,
+    recent_eval_runs,
     responses_for_run,
 )
 
@@ -187,6 +188,66 @@ def _build_comparisons(
     return comparisons
 
 
+def _build_rolling_metrics(
+    conn: sqlite3.Connection,
+    *,
+    baseline_responses: list[dict],
+    rolling_window: int,
+    psi_threshold: float,
+) -> dict[str, RollingMetric]:
+    """Compute per-prompt PSI / KL between baseline and the recent eval-run window.
+
+    Degenerate when baseline has <2 samples or there's no eval data for the prompt.
+    """
+    baseline_by_pid = _group_by_prompt(baseline_responses)
+    recent = recent_eval_runs(conn, limit=rolling_window)
+    rolling_responses: list[dict] = []
+    for run in recent:
+        rolling_responses.extend(responses_for_run(conn, int(run["id"])))
+    rolling_by_pid = _group_by_prompt(rolling_responses)
+
+    # How many of the recent runs included this prompt at all
+    runs_per_pid: dict[str, set[int]] = defaultdict(set)
+    for r in rolling_responses:
+        runs_per_pid[r["prompt_id"]].add(int(r["run_id"]))
+
+    metrics: dict[str, RollingMetric] = {}
+    for pid, baseline_samples in baseline_by_pid.items():
+        n_runs = len(runs_per_pid.get(pid, set()))
+
+        if len(baseline_samples) < 2 or pid not in rolling_by_pid:
+            metrics[pid] = RollingMetric(
+                prompt_id=pid,
+                psi=None,
+                kl=None,
+                psi_passed=None,
+                n_runs=n_runs,
+            )
+            continue
+
+        b_embs = [s["embedding"] for s in baseline_samples]
+        baseline_pairs = [
+            cosine(b_embs[i], b_embs[j])
+            for i in range(len(b_embs))
+            for j in range(i + 1, len(b_embs))
+        ]
+
+        rolling_pairs = [cosine(s["embedding"], b) for s in rolling_by_pid[pid] for b in b_embs]
+
+        p = histogram(baseline_pairs)
+        q = histogram(rolling_pairs)
+        psi_val = psi(p, q)
+        kl_val = kl_divergence(p, q)
+        metrics[pid] = RollingMetric(
+            prompt_id=pid,
+            psi=psi_val,
+            kl=kl_val,
+            psi_passed=psi_val < psi_threshold,
+            n_runs=n_runs,
+        )
+    return metrics
+
+
 def run_eval(
     prompts_path: Path,
     db_path: Path,
@@ -195,6 +256,8 @@ def run_eval(
     provider_name: str | None,
     samples: int | None,
     temperature: float | None,
+    psi_threshold: float = 0.25,
+    rolling_window: int = 7,
 ) -> int:
     prompts = _load_prompts(prompts_path)
 
@@ -236,6 +299,12 @@ def run_eval(
     baseline_responses = responses_for_run(conn, baseline["id"])
     eval_responses = responses_for_run(conn, eval_run_id)
     comparisons = _build_comparisons(baseline_responses, eval_responses, threshold)
+    rolling = _build_rolling_metrics(
+        conn,
+        baseline_responses=baseline_responses,
+        rolling_window=rolling_window,
+        psi_threshold=psi_threshold,
+    )
 
     eval_run_row = conn.execute(
         "SELECT id, started_at, model, embedding_model, kind, provider, samples, temperature "
@@ -248,6 +317,9 @@ def run_eval(
         baseline_run=baseline,
         comparisons=comparisons,
         threshold=threshold,
+        rolling=rolling,
+        psi_threshold=psi_threshold,
+        rolling_window=rolling_window,
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +328,9 @@ def run_eval(
 
     failed_compared = [c for c in comparisons if c.kind == "compared" and not c.passed]
     total_compared = sum(1 for c in comparisons if c.kind == "compared")
-    result = "FAIL" if failed_compared else "PASS"
+    psi_failed = [m for m in rolling.values() if m.psi_passed is False]
+    has_drift = bool(failed_compared or psi_failed)
+    result = "FAIL" if has_drift else "PASS"
     print(f"Drift report: {result} — wrote {report_path}")
 
     if failed_compared:
@@ -280,4 +354,4 @@ def run_eval(
             report_path=str(report_path),
         )
 
-    return 1 if (failed_compared or failures) else 0
+    return 1 if (has_drift or failures) else 0
